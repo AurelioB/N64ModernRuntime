@@ -19,6 +19,15 @@
 #include "ultramodern/renderer_context.hpp"
 
 static ultramodern::events::callbacks_t events_callbacks{};
+static std::atomic_bool app_paused{false};
+
+void ultramodern::set_app_paused(bool paused) {
+    app_paused.store(paused, std::memory_order_release);
+}
+
+bool ultramodern::is_app_paused() {
+    return app_paused.load(std::memory_order_acquire);
+}
 
 void ultramodern::events::set_callbacks(const ultramodern::events::callbacks_t& callbacks) {
     events_callbacks = callbacks;
@@ -189,6 +198,11 @@ void vi_thread_func() {
     int remaining_retraces = 1;
 
     while (!exited) {
+        if (ultramodern::is_app_paused()) {
+            ultramodern::sleep_milliseconds(16);
+            continue;
+        }
+
         // Determine the next VI time (more accurate than adding 16ms each VI interrupt)
         auto next = ultramodern::get_start() + (total_vis * 1000000us) / (60 * ultramodern::get_speed_multiplier());
         //if (next > std::chrono::high_resolution_clock::now()) {

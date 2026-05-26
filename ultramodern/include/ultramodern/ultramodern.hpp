@@ -87,6 +87,8 @@ std::chrono::high_resolution_clock::duration time_since_start();
 void measure_input_latency();
 void sleep_milliseconds(uint32_t millis);
 void sleep_until(const std::chrono::high_resolution_clock::time_point& time_point);
+void set_app_paused(bool paused);
+bool is_app_paused();
 
 // Graphics
 uint32_t get_target_framerate(uint32_t original);
