@@ -87,13 +87,29 @@ void timer_thread(RDRAM_ARG1) {
     // Ordered set of timers that are currently active
     std::set<PTR(OSTimer), decltype(timer_sort)> active_timers{timer_sort};
     
+    auto erase_timer_by_pointer = [&](PTR(OSTimer) timer) {
+        for (auto it = active_timers.begin(); it != active_timers.end();) {
+            if (*it == timer) {
+                it = active_timers.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+    };
+
     // Lambda to process a timer action to handle adding and removing timers
     auto process_timer_action = [&](const Action& action) {
         // Determine the action type and act on it
         if (const auto* add_action = std::get_if<AddTimerAction>(&action)) {
+            // The set comparator depends on OSTimer::timestamp, and osSetTimer mutates
+            // the timer before the timer thread sees the AddTimerAction. Remove any
+            // existing entry by pointer identity first; using active_timers.erase(timer)
+            // can miss entries once the pointed-to timestamp has changed.
+            erase_timer_by_pointer(add_action->timer);
             active_timers.insert(add_action->timer);
         } else if (const auto* remove_action = std::get_if<RemoveTimerAction>(&action)) {
-            active_timers.erase(remove_action->timer);
+            erase_timer_by_pointer(remove_action->timer);
         }
     };
 
@@ -115,7 +131,7 @@ void timer_thread(RDRAM_ARG1) {
         OSTimer* cur_timer = TO_PTR(OSTimer, cur_timer_);
 
         // Remove the timer from the queue (it may get readded if waiting is interrupted)
-        active_timers.erase(cur_timer_);
+        active_timers.erase(active_timers.begin());
 
         // Determine how long to wait to reach the timer's timestamp
         auto wait_duration = ticks_to_timepoint(cur_timer->timestamp) - std::chrono::high_resolution_clock::now();
@@ -134,7 +150,12 @@ void timer_thread(RDRAM_ARG1) {
             // If the timer has a specified interval then reload it with that value
             if (cur_timer->interval != 0) {
                 cur_timer->timestamp = cur_timer->interval + time_now();
+                erase_timer_by_pointer(cur_timer_);
                 active_timers.insert(cur_timer_);
+            }
+            else {
+                // Defensive cleanup for stale duplicate entries from timer rescheduling.
+                erase_timer_by_pointer(cur_timer_);
             }
         }
     }
