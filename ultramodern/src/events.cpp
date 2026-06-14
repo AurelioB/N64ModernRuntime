@@ -19,14 +19,22 @@
 #include "ultramodern/renderer_context.hpp"
 
 static ultramodern::events::callbacks_t events_callbacks{};
-static std::atomic_bool app_paused{false};
+static std::atomic_bool vi_scheduler_paused{false};
+
+void ultramodern::set_vi_scheduler_paused(bool paused) {
+    vi_scheduler_paused.store(paused, std::memory_order_release);
+}
+
+bool ultramodern::is_vi_scheduler_paused() {
+    return vi_scheduler_paused.load(std::memory_order_acquire);
+}
 
 void ultramodern::set_app_paused(bool paused) {
-    app_paused.store(paused, std::memory_order_release);
+    set_vi_scheduler_paused(paused);
 }
 
 bool ultramodern::is_app_paused() {
-    return app_paused.load(std::memory_order_acquire);
+    return is_vi_scheduler_paused();
 }
 
 void ultramodern::events::set_callbacks(const ultramodern::events::callbacks_t& callbacks) {
@@ -198,7 +206,7 @@ void vi_thread_func() {
     int remaining_retraces = 1;
 
     while (!exited) {
-        if (ultramodern::is_app_paused()) {
+        if (ultramodern::is_vi_scheduler_paused()) {
             ultramodern::sleep_milliseconds(16);
             continue;
         }

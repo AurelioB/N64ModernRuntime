@@ -87,6 +87,14 @@ std::chrono::high_resolution_clock::duration time_since_start();
 void measure_input_latency();
 void sleep_milliseconds(uint32_t millis);
 void sleep_until(const std::chrono::high_resolution_clock::time_point& time_point);
+// Pause/resume only the VI scheduler while the app is backgrounded or unfocused.
+// This is not an emulated clock pause: timers and osGetTime/osGetCount remain
+// based on host monotonic time, and VI work resumes against current time.
+void set_vi_scheduler_paused(bool paused);
+bool is_vi_scheduler_paused();
+// Backwards-compatible aliases for older platform lifecycle code. Prefer the
+// VI scheduler names above when adding new call sites so this is not confused
+// with a full emulated-time pause.
 void set_app_paused(bool paused);
 bool is_app_paused();
 
