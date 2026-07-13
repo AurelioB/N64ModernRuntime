@@ -9,7 +9,7 @@
 #include <variant>
 #include <functional>
 
-#include <json/json.hpp>
+#include "../../../thirdparty/json/json.hpp"
 
 #include "recomp.h"
 
