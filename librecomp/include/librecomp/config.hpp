@@ -26,7 +26,9 @@ namespace recomp {
             Enum,
             Number,
             String,
-            Bool
+            Bool,
+            Info,
+            Action
         };
 
         struct ConfigOptionEnumOption {
@@ -90,7 +92,16 @@ namespace recomp {
             bool default_value;
         };
 
-        typedef std::variant<ConfigOptionEnum, ConfigOptionNumber, ConfigOptionString, ConfigOptionBool> ConfigOptionVariant;
+        struct ConfigOptionInfo {
+            std::string default_value;
+        };
+
+        struct ConfigOptionAction {
+            std::string button_text;
+            std::function<void()> callback;
+        };
+
+        typedef std::variant<ConfigOptionEnum, ConfigOptionNumber, ConfigOptionString, ConfigOptionBool, ConfigOptionInfo, ConfigOptionAction> ConfigOptionVariant;
 
         struct ConfigOption {
             std::string id;
@@ -239,6 +250,23 @@ namespace recomp {
                 const std::string &name,
                 const std::string &description,
                 bool default_value = false,
+                bool hidden = false
+            );
+
+            void add_info_option(
+                const std::string &id,
+                const std::string &name,
+                const std::string &description,
+                const std::string &default_value,
+                bool hidden = false
+            );
+
+            void add_action_option(
+                const std::string &id,
+                const std::string &name,
+                const std::string &description,
+                const std::string &button_text,
+                std::function<void()> callback,
                 bool hidden = false
             );
 

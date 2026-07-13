@@ -1,4 +1,5 @@
 #include <fstream>
+#include <utility>
 #include "librecomp/files.hpp"
 #include "librecomp/config.hpp"
 #include "librecomp/game.hpp"
@@ -123,6 +124,12 @@ void Config::add_option(const ConfigOption& option) {
         case ConfigOptionType::Bool:
             default_value = std::get<ConfigOptionBool>(option.variant).default_value;
             break;
+        case ConfigOptionType::Info:
+            default_value = std::get<ConfigOptionInfo>(option.variant).default_value;
+            break;
+        case ConfigOptionType::Action:
+            default_value = std::monostate();
+            break;
     }
 
     storage.value_map[option.id] = default_value;
@@ -238,6 +245,43 @@ void Config::add_bool_option(
     add_option(option);
 }
 
+void Config::add_info_option(
+    const std::string &id,
+    const std::string &name,
+    const std::string &description,
+    const std::string &default_value,
+    bool hidden
+) {
+    ConfigOption option;
+    option.id = id;
+    option.name = name;
+    option.description = description;
+    option.type = ConfigOptionType::Info;
+    option.variant = ConfigOptionInfo{default_value};
+    option.hidden = hidden;
+
+    add_option(option);
+}
+
+void Config::add_action_option(
+    const std::string &id,
+    const std::string &name,
+    const std::string &description,
+    const std::string &button_text,
+    std::function<void()> callback,
+    bool hidden
+) {
+    ConfigOption option;
+    option.id = id;
+    option.name = name;
+    option.description = description;
+    option.type = ConfigOptionType::Action;
+    option.variant = ConfigOptionAction{button_text, std::move(callback)};
+    option.hidden = hidden;
+
+    add_option(option);
+}
+
 const ConfigValueVariant Config::get_option_default_value(const std::string& option_id) const {
     auto option_by_id_it = schema.options_by_id.find(option_id);
     if (option_by_id_it == schema.options_by_id.end()) {
@@ -255,6 +299,10 @@ const ConfigValueVariant Config::get_option_default_value(const std::string& opt
         return std::get<ConfigOptionString>(option.variant).default_value;
     case ConfigOptionType::Bool:
         return std::get<ConfigOptionBool>(option.variant).default_value;
+    case ConfigOptionType::Info:
+        return std::get<ConfigOptionInfo>(option.variant).default_value;
+    case ConfigOptionType::Action:
+        return std::monostate();
     default:
         assert(false && "Unknown config option type.");
         return std::monostate();
@@ -397,6 +445,9 @@ nlohmann::json Config::get_storage_json() const {
         case ConfigOptionType::Bool:
             json[option.id] = std::get<bool>(value);
             break;
+        case ConfigOptionType::Info:
+        case ConfigOptionType::Action:
+            break;
         }
     }
     return json;
@@ -505,6 +556,10 @@ ConfigValueVariant Config::parse_config_option_json_value(const nlohmann::json& 
                 return check_config_option_bool_string(str_val);
             }
             return json_value.get<bool>();
+        case ConfigOptionType::Info:
+            return std::get<ConfigOptionInfo>(option.variant).default_value;
+        case ConfigOptionType::Action:
+            return std::monostate();
     }
 }
 
@@ -648,6 +703,17 @@ void Config::update_option_enum_details(const std::string& option_id, const std:
 
 void Config::update_option_value(const std::string& option_id, ConfigValueVariant value) {
     size_t option_index = schema.options_by_id[option_id];
+    const auto option_type = schema.options[option_index].type;
+    if (option_type == ConfigOptionType::Info || option_type == ConfigOptionType::Action) {
+        storage.value_map[option_id] = value;
+        if (requires_confirmation) {
+            temp_storage.value_map[option_id] = value;
+            modified_options.erase(option_index);
+        }
+        report_config_option_update(option_index, ConfigOptionUpdateType::Value);
+        return;
+    }
+
     // This could potentially cause an update loop due to set_option_value calling change callbacks, which could call this function.
     // It seems more important to call change callbacks AND respect requires_confirmation
     set_option_value(option_id, value);
