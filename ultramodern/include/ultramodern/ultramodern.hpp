@@ -7,6 +7,7 @@
 #include <span>
 #include <chrono>
 #include <filesystem>
+#include <vector>
 
 #undef MOODYCAMEL_DELETE_FUNCTION
 #define MOODYCAMEL_DELETE_FUNCTION = delete
@@ -41,6 +42,22 @@ void init_thread_cleanup();
 // Saving
 void change_save_file(const std::u8string& subfolder, const std::u8string& name);
 std::filesystem::path get_save_file_path();
+// Returns the directory under which save subfolders and files are stored.
+std::filesystem::path get_save_root_path();
+// Returns the exact byte count accepted by import_save_file.
+size_t get_save_file_size();
+// Changes the save root. When load_existing is true, the active save is loaded
+// from the new root; otherwise the current in-memory save is written there.
+bool set_save_root_path(const std::filesystem::path& root, bool load_existing);
+// Flushes pending writes and reports whether the active save reached storage.
+bool flush_save_file();
+// Produces a consistent snapshot after flushing pending writes.
+bool snapshot_save_file(std::vector<uint8_t>& snapshot);
+// Replaces the active save atomically, preserving the existing backup behavior.
+// The data size must exactly match the configured save type.
+bool import_save_file(std::span<const uint8_t> data);
+// Reloads the active save from storage (including backup recovery).
+bool reload_save_file();
 
 // Thread queues.
 constexpr PTR(PTR(OSThread)) running_queue = (PTR(PTR(OSThread)))-1;
@@ -108,6 +125,16 @@ std::chrono::high_resolution_clock::duration time_since_start();
 void measure_input_latency();
 void sleep_milliseconds(uint32_t millis);
 void sleep_until(const std::chrono::high_resolution_clock::time_point& time_point);
+// Pause/resume only the VI scheduler while the app is backgrounded or unfocused.
+// This is not an emulated clock pause: timers and osGetTime/osGetCount remain
+// based on host monotonic time, and VI work resumes against current time.
+void set_vi_scheduler_paused(bool paused);
+bool is_vi_scheduler_paused();
+// Backwards-compatible aliases for older platform lifecycle code. Prefer the
+// VI scheduler names above when adding new call sites so this is not confused
+// with a full emulated-time pause.
+void set_app_paused(bool paused);
+bool is_app_paused();
 
 // Graphics
 uint32_t get_target_framerate(uint32_t original);

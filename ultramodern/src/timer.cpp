@@ -37,6 +37,11 @@ struct RemoveTimerAction {
     PTR(OSTimer) timer;
 };
 
+struct ActiveTimer {
+    PTR(OSTimer) timer;
+    OSTime timestamp;
+};
+
 using Action = std::variant<AddTimerAction, RemoveTimerAction>;
 
 struct {
@@ -70,30 +75,50 @@ void timer_thread(RDRAM_ARG1) {
     ultramodern::set_native_thread_name("Timer Thread");
     ultramodern::set_native_thread_priority(ultramodern::ThreadPriority::VeryHigh);
 
-    // Lambda comparator function to keep the set ordered
-    auto timer_sort = [PASS_RDRAM1](PTR(OSTimer) a_, PTR(OSTimer) b_) {
-        OSTimer* a = TO_PTR(OSTimer, a_);
-        OSTimer* b = TO_PTR(OSTimer, b_);
-
-        // Order by timestamp if the timers have different timestamps
-        if (a->timestamp != b->timestamp) {
-            return a->timestamp < b->timestamp;
+    // Lambda comparator function to keep the set ordered. Store a timestamp
+    // snapshot in the set instead of comparing through OSTimer::timestamp:
+    // osSetTimer mutates that field before enqueueing AddTimerAction, so using
+    // the pointed-to mutable field as a set key can invalidate the tree order.
+    auto timer_sort = [](const ActiveTimer& a, const ActiveTimer& b) {
+        // Order by timestamp if the timers have different timestamps.
+        if (a.timestamp != b.timestamp) {
+            return a.timestamp < b.timestamp;
         }
 
         // If they have the exact same timestamp then order by address instead
-        return a < b;
+        return a.timer < b.timer;
+    };
+
+    auto make_active_timer = [PASS_RDRAM1](PTR(OSTimer) timer) {
+        return ActiveTimer{
+            .timer = timer,
+            .timestamp = TO_PTR(OSTimer, timer)->timestamp,
+        };
     };
 
     // Ordered set of timers that are currently active
-    std::set<PTR(OSTimer), decltype(timer_sort)> active_timers{timer_sort};
+    std::set<ActiveTimer, decltype(timer_sort)> active_timers{timer_sort};
     
+    auto erase_timer_by_pointer = [&](PTR(OSTimer) timer) {
+        for (auto it = active_timers.begin(); it != active_timers.end();) {
+            if (it->timer == timer) {
+                it = active_timers.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+    };
+
     // Lambda to process a timer action to handle adding and removing timers
     auto process_timer_action = [&](const Action& action) {
         // Determine the action type and act on it
         if (const auto* add_action = std::get_if<AddTimerAction>(&action)) {
-            active_timers.insert(add_action->timer);
+            // Remove stale snapshots by pointer identity before adding the current one.
+            erase_timer_by_pointer(add_action->timer);
+            active_timers.insert(make_active_timer(add_action->timer));
         } else if (const auto* remove_action = std::get_if<RemoveTimerAction>(&action)) {
-            active_timers.erase(remove_action->timer);
+            erase_timer_by_pointer(remove_action->timer);
         }
     };
 
@@ -111,20 +136,21 @@ void timer_thread(RDRAM_ARG1) {
         }
 
         // Get the timer that's closest to running out
-        PTR(OSTimer) cur_timer_ = *active_timers.begin();
+        ActiveTimer cur_active_timer = *active_timers.begin();
+        PTR(OSTimer) cur_timer_ = cur_active_timer.timer;
         OSTimer* cur_timer = TO_PTR(OSTimer, cur_timer_);
 
         // Remove the timer from the queue (it may get readded if waiting is interrupted)
-        active_timers.erase(cur_timer_);
+        active_timers.erase(active_timers.begin());
 
         // Determine how long to wait to reach the timer's timestamp
-        auto wait_duration = ticks_to_timepoint(cur_timer->timestamp) - std::chrono::high_resolution_clock::now();
+        auto wait_duration = ticks_to_timepoint(cur_active_timer.timestamp) - std::chrono::high_resolution_clock::now();
 
         // Wait for either the duration to complete or a new action to come through
         if (wait_duration.count() >= 0 && timer_context.action_queue.wait_dequeue_timed(cur_action, wait_duration)) {
             // Timer was interrupted by a new action 
             // Add the current timer back to the queue (done first in case the action is to remove this timer)
-            active_timers.insert(cur_timer_);
+            active_timers.insert(cur_active_timer);
             // Process the new action
             process_timer_action(cur_action);
         }
@@ -134,7 +160,12 @@ void timer_thread(RDRAM_ARG1) {
             // If the timer has a specified interval then reload it with that value
             if (cur_timer->interval != 0) {
                 cur_timer->timestamp = cur_timer->interval + time_now();
-                active_timers.insert(cur_timer_);
+                erase_timer_by_pointer(cur_timer_);
+                active_timers.insert(make_active_timer(cur_timer_));
+            }
+            else {
+                // Defensive cleanup for stale duplicate entries from timer rescheduling.
+                erase_timer_by_pointer(cur_timer_);
             }
         }
     }
