@@ -227,24 +227,77 @@ private:
     uint32_t api_version;
 };
 
-void unprotect(void* target_func, uint64_t* old_flags) {
-    // Align the address to a page boundary.
-    uintptr_t page_start = (uintptr_t)target_func;
-    int page_size = getpagesize();
-    page_start = (page_start / page_size) * page_size;
+// The window that patch_func()/unpatch_func() write between unprotect() and protect() is up
+// to 16 bytes wide: the ARM64 trampoline is an 8-byte instruction pair plus an 8-byte
+// pointer, and unpatch_func() always restores PatchData::replaced_bytes, a
+// std::array<std::byte, 16>. When target_func sits near the end of a page that window
+// straddles a page boundary, so both pages have to be prepared -- a single store that
+// crosses into a still-executable page faults as a whole. The Win32 branch above gets this
+// for free by passing the length to VirtualProtect(); the POSIX branch has to derive the
+// page range itself.
+static constexpr uintptr_t patch_window_size = 16;
 
-    int result = mprotect((void*)page_start, page_size, PROT_READ | PROT_WRITE);
+static void patch_page_range(void* target_func, int page_size, uintptr_t& page_start, uintptr_t& page_end) {
+    uintptr_t addr = (uintptr_t)target_func;
+    page_start = (addr / page_size) * page_size;
+    page_end = ((addr + patch_window_size + page_size - 1) / page_size) * page_size;
+}
+
+// On Android, an untrusted_app process cannot regain PROT_EXEC on a file-backed page once
+// mprotect() has dirtied it with PROT_WRITE: SELinux denies the execmod permission, so the
+// protect() call below fails with EACCES for every hooked page, leaves it read-write, and
+// the first indirect branch into one raises SEGV_ACCERR. Work around it by swapping each
+// affected page for a fresh anonymous page mapped at the exact same address via
+// mremap(..., MREMAP_FIXED): PROT_EXEC on anonymous memory is allowed for apps (the same
+// precedent JIT compilers rely on), and because the anonymous page replaces the original at
+// the same virtual address, the direct memcpy() writes that patch_func()/unpatch_func() do
+// between unprotect() and protect() land on the copy transparently -- no call-site changes
+// are needed. Every other platform, and Android whenever any step of the swap fails, keeps
+// the plain mprotect() below.
+void unprotect(void* target_func, uint64_t* old_flags) {
+    // Align the address range covering the patch window to page boundaries.
+    int page_size = getpagesize();
+    uintptr_t page_start, page_end;
+    patch_page_range(target_func, page_size, page_start, page_end);
+
+    for (uintptr_t page = page_start; page < page_end; page += page_size) {
+        bool swapped = false;
+#if defined(__ANDROID__)
+        void* page_copy = mmap(nullptr, page_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (page_copy != MAP_FAILED) {
+            memcpy(page_copy, (void*)page, page_size);
+            // MREMAP_FIXED unmaps whatever currently occupies the destination range, so a
+            // page that an earlier call already swapped is released here rather than leaked,
+            // and the copy carries that call's patch along with it.
+            if (mremap(page_copy, page_size, page_size, MREMAP_MAYMOVE | MREMAP_FIXED, (void*)page) != MAP_FAILED) {
+                swapped = true;
+            }
+            else {
+                munmap(page_copy, page_size);
+            }
+        }
+#endif
+
+        if (!swapped) {
+            int result = mprotect((void*)page, page_size, PROT_READ | PROT_WRITE);
+            (void)result;
+        }
+    }
+
     *old_flags = 0;
-    (void)result;
 }
 
 void protect(void* target_func, uint64_t old_flags) {
-    // Align the address to a page boundary.
-    uintptr_t page_start = (uintptr_t)target_func;
+    // Align the address range covering the patch window to page boundaries.
     int page_size = getpagesize();
-    page_start = (page_start / page_size) * page_size;
+    uintptr_t page_start, page_end;
+    patch_page_range(target_func, page_size, page_start, page_end);
 
-    int result = mprotect((void*)page_start, page_size, PROT_READ | PROT_EXEC);
+    int result = mprotect((void*)page_start, page_end - page_start, PROT_READ | PROT_EXEC);
+    // The patched instructions were written through a data mapping. On architectures with
+    // separate instruction and data caches (ARM64 in particular) the core is free to execute
+    // stale bytes it already holds in the i-cache unless it is invalidated explicitly.
+    __builtin___clear_cache((char*)page_start, (char*)page_end);
     (void)result;
 }
 #endif
